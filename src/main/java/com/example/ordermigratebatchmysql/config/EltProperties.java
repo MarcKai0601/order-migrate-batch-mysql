@@ -7,9 +7,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "elt")
 public class EltProperties {
     private boolean enabled = true;
-    private int batchSize = 150_000;
-    private int maxBatchesPerRun = 50;
-    private long pauseMs = 300;
-    private String cron = "0 15 2 * * *";
+    private int batchSize = 10000;
+    private int maxBatchesPerRun = 100;
+    private long pauseMs = 200;
+    private String cron = "0 */5 * * * *";
     private String zoneId = "Asia/Taipei";
 }

@@ -32,5 +32,8 @@ public class HttpLogEltRunner implements CommandLineRunner {
         } catch (Exception e) {
             log.error("withdraw 任務失敗", e);
         }
+
+        log.info("ELT 執行完畢（若前面無批次日誌，代表本次無資料可搬移）");
+
     }
 }

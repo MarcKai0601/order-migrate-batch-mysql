@@ -10,9 +10,8 @@ spring:
       validation-timeout: 5000
       max-lifetime: 1800000
 
-  config:
-    activate:
-      default: elt-run
+  profiles:
+    activate: elt-run
   main:
     web-application-type: none
 
@@ -26,11 +25,3 @@ logging:
     org.mybatis: DEBUG
     org.mybatis.spring: DEBUG
     com.example.ordermigratebatchmysql: INFO
-
-elt:
-  enabled: false               # feature flag：可一鍵關閉
-  batch-size: 150000
-  max-batches-per-run: 50
-  pause-ms: 300
-  cron: "0 15 2 * * *"        # 每日 02:15 觸發（Asia/Taipei）
-  zone-id: "Asia/Taipei"
