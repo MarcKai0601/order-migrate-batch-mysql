@@ -11,7 +11,7 @@ spring:
       max-lifetime: 1800000
 
   profiles:
-    activate: elt-run
+    active: elt-run
   main:
     web-application-type: none
 
