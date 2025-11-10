@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+
+<mapper namespace="com.example.ordermigratebatchmysql.mapper.WithdrawHttpLogEltMapper">
+
+    <insert id="insertMissingForRange" parameterType="map">
+        INSERT INTO g_paypay.t_withdraw_order_http_log_month
+        ( Id, OrderId, Type, AccountId,
+          SubmitRequest, SubmitResponse, SubmitTime,
+          QueryRequest, QueryResponse, QueryTime,
+          CallbackRequest, CallbackTime )
+        SELECT
+            s.Id, s.OrderId, s.Type, s.AccountId,
+            s.SubmitRequest, s.SubmitResponse, s.SubmitTime,
+            s.QueryRequest, s.QueryResponse, s.QueryTime,
+            s.CallbackRequest, s.CallbackTime
+        FROM g_paypay.t_withdraw_order_http_log s
+        WHERE s.SubmitTime <![CDATA[ >= ]]> #{start}
+          AND s.SubmitTime <![CDATA[ < ]]> #{end}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM g_paypay.t_withdraw_order_http_log_month t
+            WHERE t.Id = s.Id
+            )
+        ORDER BY s.SubmitTime, s.Id
+            LIMIT #{batchSize}
+        ON DUPLICATE KEY UPDATE Id = VALUES(Id)
+    </insert>
+
+    <select id="countMissingForRange" resultType="int" parameterType="map">
+        SELECT COUNT(1)
+        FROM g_paypay.t_withdraw_order_http_log s FORCE INDEX (idx_submit_time)
+        WHERE s.SubmitTime <![CDATA[ >= ]]> #{start}
+          AND s.SubmitTime <![CDATA[ < ]]> #{end}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM g_paypay.t_withdraw_order_http_log_month t
+            WHERE t.Id = s.Id
+            )
+    </select>
+
+</mapper>
