@@ -78,4 +78,11 @@ public class HttpLogEltService {
     public int migrateOneBatchbyWithdrawOrderHttpLog(LocalDateTime start, LocalDateTime end, int batchSize) {
         return withdrawHttpLogEltMapper.insertMissingForRange(start, end, batchSize);
     }
+
+//    public static void main(String[] args) {
+//        ZoneId zone = ZoneId.of("Asia/Taipei");
+//        LocalDate today = LocalDate.now(zone);
+//        System.out.println(today.withDayOfMonth(1).minusMonths(1).atStartOfDay());
+//        System.out.println(today.withDayOfMonth(1).plusMonths(1).atStartOfDay());
+//    }
 }

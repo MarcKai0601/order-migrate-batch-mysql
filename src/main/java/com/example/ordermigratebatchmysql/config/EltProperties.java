@@ -8,7 +8,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class EltProperties {
     private boolean enabled = true;
     private int batchSize = 10000;
-    private int maxBatchesPerRun = 100;
+    private int maxBatchesPerRun = 1000;
     private long pauseMs = 200;
     private String cron = "0 */5 * * * *";
     private String zoneId = "Asia/Taipei";
