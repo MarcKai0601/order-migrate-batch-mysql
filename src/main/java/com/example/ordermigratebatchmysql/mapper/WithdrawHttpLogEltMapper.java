@@ -1,11 +1,9 @@
 package com.example.ordermigratebatchmysql.mapper;
 
-import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.time.LocalDateTime;
 
-@Mapper
 public interface WithdrawHttpLogEltMapper {
 
     /** 單批搬移：回傳受影響筆數 */
