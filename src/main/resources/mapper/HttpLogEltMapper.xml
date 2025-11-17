@@ -1,38 +1,18 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
 <mapper namespace="com.example.ordermigratebatchmysql.mapper.HttpLogEltMapper">
 
-<!--    <insert id="insertMissingForRange" parameterType="map">-->
-<!--        INSERT INTO g_paypay.t_order_http_log_month-->
-<!--        ( Id, OrderId, Type, AccountId,-->
-<!--          SubmitRequest, SubmitResponse, SubmitTime,-->
-<!--          QueryRequest, QueryResponse, QueryTime,-->
-<!--          CallbackRequest, CallbackTime )-->
-<!--        SELECT-->
-<!--            s.Id, s.OrderId, s.Type, s.AccountId,-->
-<!--            s.SubmitRequest, s.SubmitResponse, s.SubmitTime,-->
-<!--            s.QueryRequest, s.QueryResponse, s.QueryTime,-->
-<!--            s.CallbackRequest, s.CallbackTime-->
-<!--        FROM g_paypay.t_order_http_log s-->
-<!--        WHERE s.SubmitTime <![CDATA[ >= ]]> #{start}-->
-<!--          AND s.SubmitTime <![CDATA[ < ]]> #{end}-->
-<!--          AND NOT EXISTS (-->
-<!--            SELECT 1-->
-<!--            FROM g_paypay.t_order_http_log_month t-->
-<!--            WHERE t.Id = s.Id-->
-<!--            )-->
-<!--        ORDER BY s.SubmitTime, s.Id-->
-<!--            LIMIT #{batchSize}-->
-<!--        ON DUPLICATE KEY UPDATE Id = VALUES(Id)-->
-<!--    </insert>-->
-
-    <insert id="insertMissingForRange" parameterType="map">
-        INSERT IGNORE INTO g_paypay.t_order_http_log_month
-    ( Id, OrderId, Type, AccountId,
-      SubmitRequest, SubmitResponse, SubmitTime,
-      QueryRequest, QueryResponse, QueryTime,
-      CallbackRequest, CallbackTime )
+    <!-- 單批搬移：來源有、目標沒有 -->
+    <insert id="insertMissingForRange">
+        INSERT INTO g_paypay.t_order_http_log_month
+        (
+            Id, OrderId, Type, AccountId,
+            SubmitRequest, SubmitResponse, SubmitTime,
+            QueryRequest, QueryResponse, QueryTime,
+            CallbackRequest, CallbackTime
+        )
         SELECT
             src.Id, src.OrderId, src.Type, src.AccountId,
             src.SubmitRequest, src.SubmitResponse, src.SubmitTime,
@@ -41,12 +21,16 @@
         FROM g_paypay.t_order_http_log AS src
         WHERE src.SubmitTime <![CDATA[ >= ]]> #{start}
           AND src.SubmitTime <![CDATA[ < ]]> #{end}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM g_paypay.t_order_http_log_month t
+            WHERE t.Id = src.Id
+        )
         ORDER BY src.SubmitTime, src.Id
             LIMIT #{batchSize}
     </insert>
 
-
-    <select id="countMissingForRange" resultType="int" parameterType="map">
+    <select id="countMissingForRange" resultType="int">
         SELECT COUNT(1)
         FROM g_paypay.t_order_http_log s
         WHERE s.SubmitTime <![CDATA[ >= ]]> #{start}
@@ -55,7 +39,7 @@
             SELECT 1
             FROM g_paypay.t_order_http_log_month t
             WHERE t.Id = s.Id
-            )
+        )
     </select>
 
 </mapper>
