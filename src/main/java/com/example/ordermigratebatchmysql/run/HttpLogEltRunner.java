@@ -2,10 +2,8 @@ package com.example.ordermigratebatchmysql.run;
 
 import com.example.ordermigratebatchmysql.config.EltProperties;
 import com.example.ordermigratebatchmysql.service.HttpLogEltService;
-import com.example.ordermigratebatchmysql.service.HttpLogEltServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
@@ -14,10 +12,6 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.UUID;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Component
@@ -31,75 +25,46 @@ public class HttpLogEltRunner implements CommandLineRunner {
     @Override
     public void run(String... args) {
         String runId = UUID.randomUUID().toString().substring(0, 8);
-
         ZoneId zone = ZoneId.of(props.getZoneId());
-        LocalDate today = LocalDate.now(zone);
 
-        // 這裡先做一個「上個月」的範例：上月1號 00:00 到 本月1號 00:00
-        LocalDateTime start = today.withDayOfMonth(1).minusMonths(1).atStartOfDay();
-        LocalDateTime end   = today.withDayOfMonth(1).atStartOfDay();
+        // 整體窗口：上一個完整月 (例如今天 11/17 => 10/01 00:00 ~ 11/01 00:00)
+        LocalDate today = LocalDate.now(zone);
+        LocalDate monthStart = today.withDayOfMonth(1).minusMonths(1);
+        LocalDate monthEnd = today.withDayOfMonth(1);
+
+        LocalDateTime windowStart = monthStart.atStartOfDay();
+        LocalDateTime windowEnd = monthEnd.atStartOfDay();
 
         log.info("=== [ELT] START | window=[{}, {}) | batchSize={} maxBatches={} | runId={} ===",
-                start, end, props.getBatchSize(), props.getMaxBatchesPerRun(), runId);
+                windowStart, windowEnd, props.getBatchSize(), props.getMaxBatchesPerRun(), runId);
 
-        // 1) 啟動前先抓「剩餘筆數」（order / withdraw 各自算）
-        int orderMissing    = service.countOrderMissing(start, end);
-        int withdrawMissing = service.countWithdrawMissing(start, end);
-
+        // 整個月的預估缺口（只看 order / withdraw 全窗）
+        int orderMissing = service.countMissing("order", windowStart, windowEnd);
+        int withdrawMissing = service.countMissing("withdraw", windowStart, windowEnd);
         log.info("[ELT][runId={}] PRECHECK | orderMissing={} | withdrawMissing={}",
                 runId, orderMissing, withdrawMissing);
 
-        int orderMoved    = runKind("order", runId, start, end, orderMissing);
-        int withdrawMoved = runKind("withdraw", runId, start, end, withdrawMissing);
+        int orderMovedTotal = 0;
+        int withdrawMovedTotal = 0;
 
-        log.info("=== [ELT] DONE | runId={} | orderMoved={} / {} | withdrawMoved={} / {} ===",
-                runId, orderMoved, orderMissing, withdrawMoved, withdrawMissing);
-    }
+        // 🔹關鍵：把「一個月」拆成「一天一天」跑
+        for (LocalDate d = monthStart; d.isBefore(monthEnd); d = d.plusDays(1)) {
+            LocalDateTime dayStart = d.atStartOfDay();
+            LocalDateTime dayEnd = d.plusDays(1).atStartOfDay();
 
-    private int runKind(String kind,
-                        String runId,
-                        LocalDateTime start,
-                        LocalDateTime end,
-                        int totalMissingAtStart) {
+            log.info("[ELT][runId={}] === DAY {} | window=[{}, {}) ===",
+                    runId, d, dayStart, dayEnd);
 
-        int totalMoved = 0;
+            // 先搬 order
+            int movedOrder = service.runOrderBatches(dayStart, dayEnd, runId);
+            orderMovedTotal += movedOrder;
 
-        for (int batch = 1; batch <= props.getMaxBatchesPerRun(); batch++) {
-            long t0 = System.currentTimeMillis();
-
-            int affected;
-            if ("order".equals(kind)) {
-                affected = service.runOneOrderBatch(start, end);
-            } else {
-                affected = service.runOneWithdrawBatch(start, end);
-            }
-
-            long cost = System.currentTimeMillis() - t0;
-
-            if (affected <= 0) {
-                log.info("[ELT][{}][runId={}] no more rows | totalMoved={} | batch#={}",
-                        kind, runId, totalMoved, batch);
-                break;
-            }
-
-            totalMoved += affected;
-            double qps = (affected * 1000.0) / Math.max(cost, 1);
-
-            log.info("[ELT][{}][runId={}] batch#{} END | affected={} | cost={} ms | ~{}/s | totalMoved={} / {}",
-                    kind, runId, batch, affected, cost, String.format("%.0f", qps), totalMoved, totalMissingAtStart);
-
-            long pauseMs = props.getPauseMs();
-            if (pauseMs > 0) {
-                try {
-                    Thread.sleep(pauseMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    log.warn("[ELT][{}][runId={}] interrupted between batches", kind, runId);
-                    break;
-                }
-            }
+            // 再搬 withdraw（如果你希望並行，之後可以把這兩個丟進 Executor）
+            int movedWithdraw = service.runWithdrawBatches(dayStart, dayEnd, runId);
+            withdrawMovedTotal += movedWithdraw;
         }
 
-        return totalMoved;
+        log.info("=== [ELT] DONE | runId={} | orderMoved={} / {} | withdrawMoved={} / {} ===",
+                runId, orderMovedTotal, orderMissing, withdrawMovedTotal, withdrawMissing);
     }
 }
