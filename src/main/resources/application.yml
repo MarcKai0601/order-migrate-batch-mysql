@@ -12,9 +12,6 @@ spring:
       connection-timeout: 30000
       validation-timeout: 5000
       max-lifetime: 1800000
-
-  profiles:
-    active: elt-run
   main:
     web-application-type: none
 
