@@ -10,6 +10,10 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -23,53 +27,79 @@ public class HttpLogEltRunner implements CommandLineRunner {
 
     private final HttpLogEltService service;
     private final EltProperties props;
-    private final ExecutorService eltExecutor; // 由 EltConfig 注入
 
     @Override
     public void run(String... args) {
-        String runId = java.util.UUID.randomUUID().toString().substring(0, 8);
-        long t0 = System.currentTimeMillis();
+        String runId = UUID.randomUUID().toString().substring(0, 8);
 
-        log.info("=== [ELT] START | batchSize={} maxBatches={} pauseMs={} threads={} | runId={} ===",
-                props.getBatchSize(), props.getMaxBatchesPerRun(), props.getPauseMs(), props.getWorkerThreads(), runId);
+        ZoneId zone = ZoneId.of(props.getZoneId());
+        LocalDate today = LocalDate.now(zone);
 
-        // 提交兩條 worker
-        Future<Integer> fOrder = eltExecutor.submit(wrapWithRunId(runId, "order", service::runOrderBatches));
-        Future<Integer> fWithdraw = eltExecutor.submit(wrapWithRunId(runId, "withdraw", service::runWithdrawBatches));
+        // 這裡先做一個「上個月」的範例：上月1號 00:00 到 本月1號 00:00
+        LocalDateTime start = today.withDayOfMonth(1).minusMonths(1).atStartOfDay();
+        LocalDateTime end   = today.withDayOfMonth(1).atStartOfDay();
 
-        int total = 0;
-        try { total += fOrder.get(); } catch (Exception e) { log.error("[ELT][order][runId={}] 任務失敗", runId, e); }
-        try { total += fWithdraw.get(); } catch (Exception e) { log.error("[ELT][withdraw][runId={}] 任務失敗", runId, e); }
+        log.info("=== [ELT] START | window=[{}, {}) | batchSize={} maxBatches={} | runId={} ===",
+                start, end, props.getBatchSize(), props.getMaxBatchesPerRun(), runId);
 
-        long cost = System.currentTimeMillis() - t0;
-        log.info("=== [ELT] DONE | totalProcessed={} | cost={} ms | runId={} ===", total, cost, runId);
+        // 1) 啟動前先抓「剩餘筆數」（order / withdraw 各自算）
+        int orderMissing    = service.countOrderMissing(start, end);
+        int withdrawMissing = service.countWithdrawMissing(start, end);
 
-        // 若這個池是專屬 run 生命週期才關；若單例共享多次 run，這邊不要關
-        eltExecutor.shutdown();
-        try {
-            if (!eltExecutor.awaitTermination(30, TimeUnit.SECONDS)) {
-                eltExecutor.shutdownNow();
-            }
-        } catch (InterruptedException ie) {
-            eltExecutor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
+        log.info("[ELT][runId={}] PRECHECK | orderMissing={} | withdrawMissing={}",
+                runId, orderMissing, withdrawMissing);
+
+        int orderMoved    = runKind("order", runId, start, end, orderMissing);
+        int withdrawMoved = runKind("withdraw", runId, start, end, withdrawMissing);
+
+        log.info("=== [ELT] DONE | runId={} | orderMoved={} / {} | withdrawMoved={} / {} ===",
+                runId, orderMoved, orderMissing, withdrawMoved, withdrawMissing);
     }
 
-    /**
-     * 把 Callable 包起來：設定/清除 runId，並在開始/結束印簡要 log。
-     * 不用 MDC、不用 logback pattern；所有 runId/kind 都寫死在訊息字串裡。
-     */
-    private <T> Callable<T> wrapWithRunId(String runId, String kind, Callable<T> task) {
-        return () -> {
-            HttpLogEltServiceImpl.setRunId(runId);
-            log.info("[ELT][{}][runId={}] worker start", kind, runId);
-            try {
-                return task.call();
-            } finally {
-                log.info("[ELT][{}][runId={}] worker done", kind, runId);
-                HttpLogEltServiceImpl.clearRunId();
+    private int runKind(String kind,
+                        String runId,
+                        LocalDateTime start,
+                        LocalDateTime end,
+                        int totalMissingAtStart) {
+
+        int totalMoved = 0;
+
+        for (int batch = 1; batch <= props.getMaxBatchesPerRun(); batch++) {
+            long t0 = System.currentTimeMillis();
+
+            int affected;
+            if ("order".equals(kind)) {
+                affected = service.runOneOrderBatch(start, end);
+            } else {
+                affected = service.runOneWithdrawBatch(start, end);
             }
-        };
+
+            long cost = System.currentTimeMillis() - t0;
+
+            if (affected <= 0) {
+                log.info("[ELT][{}][runId={}] no more rows | totalMoved={} | batch#={}",
+                        kind, runId, totalMoved, batch);
+                break;
+            }
+
+            totalMoved += affected;
+            double qps = (affected * 1000.0) / Math.max(cost, 1);
+
+            log.info("[ELT][{}][runId={}] batch#{} END | affected={} | cost={} ms | ~{}/s | totalMoved={} / {}",
+                    kind, runId, batch, affected, cost, String.format("%.0f", qps), totalMoved, totalMissingAtStart);
+
+            long pauseMs = props.getPauseMs();
+            if (pauseMs > 0) {
+                try {
+                    Thread.sleep(pauseMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    log.warn("[ELT][{}][runId={}] interrupted between batches", kind, runId);
+                    break;
+                }
+            }
+        }
+
+        return totalMoved;
     }
 }
