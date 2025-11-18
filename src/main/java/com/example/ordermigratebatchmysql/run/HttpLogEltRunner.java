@@ -54,16 +54,29 @@ public class HttpLogEltRunner implements CommandLineRunner {
             int dayOrderMissing = service.countMissing("order", dayStart, dayEnd);
             int dayWithdrawMissing = service.countMissing("withdraw", dayStart, dayEnd);
 
-            log.info("[ELT][runId={}] === DAY {} | window=[{}, {}) | dayOrderMissing={} | dayWithdrawMissing={} ===",
-                    runId, d, dayStart, dayEnd, dayOrderMissing, dayWithdrawMissing);
+            // 🔍 預估這一天會需要幾個 batch
+            int estOrderBatches = (int) Math.ceil(dayOrderMissing / (double) props.getBatchSize());
+            int estWithdrawBatches = (int) Math.ceil(dayWithdrawMissing / (double) props.getBatchSize());
 
-            boolean useHalfDay =
+            log.info("[ELT][runId={}] === DAY {} | window=[{}, {}) | dayOrderMissing={} (estBatches={}) | dayWithdrawMissing={} (estBatches={}) ===",
+                    runId, d, dayStart, dayEnd,
+                    dayOrderMissing, estOrderBatches,
+                    dayWithdrawMissing, estWithdrawBatches);
+
+            boolean useHalfDayByVolume =
                     dayOrderMissing > props.getHalfDaySwitchThreshold()
                             || dayWithdrawMissing > props.getHalfDaySwitchThreshold();
 
+            boolean useHalfDayByBatchCount =
+                    estOrderBatches > props.getMaxBatchesBeforeSplit()
+                            || estWithdrawBatches > props.getMaxBatchesBeforeSplit();
+
+            boolean useHalfDay = useHalfDayByVolume || useHalfDayByBatchCount;
+
             if (!useHalfDay) {
                 // ✅ 正常情況：整天搬一次
-                log.info("[ELT][runId={}] DAY {} use FULL-DAY window", runId, d);
+                log.info("[ELT][runId={}] DAY {} use FULL-DAY window (useHalfDayByVolume={} useHalfDayByBatchCount={})",
+                        runId, d, useHalfDayByVolume, useHalfDayByBatchCount);
 
                 int movedOrder = service.runOrderBatches(dayStart, dayEnd, runId);
                 orderMovedTotal += movedOrder;
@@ -71,14 +84,19 @@ public class HttpLogEltRunner implements CommandLineRunner {
                 int movedWithdraw = service.runWithdrawBatches(dayStart, dayEnd, runId);
                 withdrawMovedTotal += movedWithdraw;
             } else {
-                // 🚨 資料量太大：切成「半天半天」搬，降低一次查詢/交易壓力
+                // 🚨 資料量太大或預估 batch 過多：切成「半天半天」搬，降低一次查詢/交易壓力
                 LocalDateTime half1Start = dayStart;
                 LocalDateTime half1End = dayStart.plusHours(12);
                 LocalDateTime half2Start = half1End;
                 LocalDateTime half2End = dayEnd;
 
-                log.warn("[ELT][runId={}] DAY {} LARGE volume detected, use HALF-DAY windows | threshold={} | orderMissing={} | withdrawMissing={}",
-                        runId, d, props.getHalfDaySwitchThreshold(), dayOrderMissing, dayWithdrawMissing);
+                log.warn("[ELT][runId={}] DAY {} LARGE or MANY-BATCH day, use HALF-DAY windows | "
+                                + "threshold={} | maxBatchesBeforeSplit={} | orderMissing={} (estBatches={}) | withdrawMissing={} (estBatches={})",
+                        runId, d,
+                        props.getHalfDaySwitchThreshold(),
+                        props.getMaxBatchesBeforeSplit(),
+                        dayOrderMissing, estOrderBatches,
+                        dayWithdrawMissing, estWithdrawBatches);
 
                 // 🔹 上半天
                 int movedOrderH1 = processWindowWithHourFallback(
@@ -102,7 +120,7 @@ public class HttpLogEltRunner implements CommandLineRunner {
     }
 
     /**
-     * 半天窗口（order）：「如果這半天缺口太大」就切成一小時一小時搬，否則整個半天一次搬完。
+     * 半天窗口（order）：「如果這半天缺口太大」或「預估批次數太多」就切成一小時一小時搬，否則整個半天一次搬完。
      */
     private int processWindowWithHourFallback(String label,
                                               String runId,
@@ -111,18 +129,30 @@ public class HttpLogEltRunner implements CommandLineRunner {
                                               LocalDateTime winEnd) {
 
         int missing = service.countMissing("order", winStart, winEnd);
-        log.info("[ELT][order][runId={}] DAY {} {} | window=[{}, {}) | missing={}",
-                runId, day, label, winStart, winEnd, missing);
+        int estBatches = (int) Math.ceil(missing / (double) props.getBatchSize());
 
-        if (missing <= props.getHourSwitchThreshold()) {
+        log.info("[ELT][order][runId={}] DAY {} {} | window=[{}, {}) | missing={} (estBatches={})",
+                runId, day, label, winStart, winEnd, missing, estBatches);
+
+        boolean useHourlyByVolume = missing > props.getHourSwitchThreshold();
+        boolean useHourlyByBatchCount = estBatches > props.getMaxBatchesBeforeSplit();
+        boolean useHourly = useHourlyByVolume || useHourlyByBatchCount;
+
+        if (!useHourly) {
             // ✅ 半天一次就好
-            log.info("[ELT][order][runId={}] DAY {} {} use HALF-DAY window directly", runId, day, label);
+            log.info("[ELT][order][runId={}] DAY {} {} use HALF-DAY window directly "
+                            + "(useHourlyByVolume={} useHourlyByBatchCount={})",
+                    runId, day, label, useHourlyByVolume, useHourlyByBatchCount);
             return service.runOrderBatches(winStart, winEnd, runId);
         }
 
-        // 🚨 半天還是太大：切成一小時一小時搬
-        log.warn("[ELT][order][runId={}] DAY {} {} VERY LARGE volume, use HOURLY windows | threshold={} | missing={}",
-                runId, day, label, props.getHourSwitchThreshold(), missing);
+        // 🚨 半天還是太大或預估批次過多：切成一小時一小時搬
+        log.warn("[ELT][order][runId={}] DAY {} {} VERY LARGE or MANY-BATCH half-day, use HOURLY windows | "
+                        + "hourThreshold={} | maxBatchesBeforeSplit={} | missing={} (estBatches={})",
+                runId, day, label,
+                props.getHourSwitchThreshold(),
+                props.getMaxBatchesBeforeSplit(),
+                missing, estBatches);
 
         int totalMoved = 0;
         for (LocalDateTime t = winStart; t.isBefore(winEnd); t = t.plusHours(1)) {
@@ -142,7 +172,7 @@ public class HttpLogEltRunner implements CommandLineRunner {
     }
 
     /**
-     * 半天窗口（withdraw）：「如果這半天缺口太大」就切成一小時一小時搬，否則整個半天一次搬完。
+     * 半天窗口（withdraw）：「如果這半天缺口太大」或「預估批次數太多」就切成一小時一小時搬，否則整個半天一次搬完。
      */
     private int processWindowWithHourFallbackForWithdraw(String label,
                                                          String runId,
@@ -151,18 +181,30 @@ public class HttpLogEltRunner implements CommandLineRunner {
                                                          LocalDateTime winEnd) {
 
         int missing = service.countMissing("withdraw", winStart, winEnd);
-        log.info("[ELT][withdraw][runId={}] DAY {} {} | window=[{}, {}) | missing={}",
-                runId, day, label, winStart, winEnd, missing);
+        int estBatches = (int) Math.ceil(missing / (double) props.getBatchSize());
 
-        if (missing <= props.getHourSwitchThreshold()) {
+        log.info("[ELT][withdraw][runId={}] DAY {} {} | window=[{}, {}) | missing={} (estBatches={})",
+                runId, day, label, winStart, winEnd, missing, estBatches);
+
+        boolean useHourlyByVolume = missing > props.getHourSwitchThreshold();
+        boolean useHourlyByBatchCount = estBatches > props.getMaxBatchesBeforeSplit();
+        boolean useHourly = useHourlyByVolume || useHourlyByBatchCount;
+
+        if (!useHourly) {
             // ✅ 半天一次就好
-            log.info("[ELT][withdraw][runId={}] DAY {} {} use HALF-DAY window directly", runId, day, label);
+            log.info("[ELT][withdraw][runId={}] DAY {} {} use HALF-DAY window directly "
+                            + "(useHourlyByVolume={} useHourlyByBatchCount={})",
+                    runId, day, label, useHourlyByVolume, useHourlyByBatchCount);
             return service.runWithdrawBatches(winStart, winEnd, runId);
         }
 
-        // 🚨 半天還是太大：切成一小時一小時搬
-        log.warn("[ELT][withdraw][runId={}] DAY {} {} VERY LARGE volume, use HOURLY windows | threshold={} | missing={}",
-                runId, day, label, props.getHourSwitchThreshold(), missing);
+        // 🚨 半天還是太大或預估批次過多：切成一小時一小時搬
+        log.warn("[ELT][withdraw][runId={}] DAY {} {} VERY LARGE or MANY-BATCH half-day, use HOURLY windows | "
+                        + "hourThreshold={} | maxBatchesBeforeSplit={} | missing={} (estBatches={})",
+                runId, day, label,
+                props.getHourSwitchThreshold(),
+                props.getMaxBatchesBeforeSplit(),
+                missing, estBatches);
 
         int totalMoved = 0;
         for (LocalDateTime t = winStart; t.isBefore(winEnd); t = t.plusHours(1)) {
